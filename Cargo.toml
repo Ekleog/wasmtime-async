@@ -1,0 +1,9 @@
+[package]
+name = "wasmtime-async"
+version = "0.1.0"
+authors = ["Léo Gaspard <leo@gaspard.io>"]
+edition = "2018"
+
+[dependencies]
+generator = "0.6.20"
+wasmtime = "0.16.0"
