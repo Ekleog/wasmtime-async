@@ -20,6 +20,10 @@ impl Stack {
     }
 }
 
+pub mod prelude {
+    pub use super::FuncExt;
+}
+
 thread_local! {
     static TRANSFER: Cell<Option<context::Transfer>> = Cell::new(None);
 }
@@ -301,11 +305,6 @@ impl<'f> AsyncGetter<'f> {
 pub trait IntoFuncAsync<Params, Results> {
     #[doc(hidden)]
     fn into_func_async(self, store: &Store) -> Func;
-}
-
-pub trait IntoFuncAsyncWithCaller<Params, Results> {
-    #[doc(hidden)]
-    fn into_func_async_with_caller(self, store: &Store) -> Func;
 }
 
 macro_rules! impl_into_func {

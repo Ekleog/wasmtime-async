@@ -30,6 +30,6 @@ let
   };
 in
 pkgs.stdenv.mkDerivation {
-  name = "rlua-async";
+  name = "wasmtime-async";
   buildInputs = (with rustStableChannel; [ rust rustfmt-preview ]);
 }
