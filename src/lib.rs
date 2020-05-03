@@ -390,4 +390,46 @@ mod tests {
             10i32
         );
     }
+
+    #[test]
+    fn wrap_async_then_get() {
+        let store = Store::default();
+        let double = Func::wrap_async(&store, |x: i32| async move {
+            let res = 2 * x;
+            futures_timer::Delay::new(Duration::from_millis(1)).await;
+            res
+        });
+        let mut stack = Stack::new(16 * 4096).unwrap();
+        let f = double.get_async().get1::<i32, i32>().unwrap();
+        assert_eq!(executor::block_on(f(&mut stack, 21)).unwrap(), 42);
+    }
+
+    #[test]
+    fn wrap_async_with_caller_then_get() {
+        let store = Store::default();
+        // TODO: this should not be required
+        fn check_type<F>(f: F) -> F
+        where
+            F: 'static + for<'a> Fn(Caller<'a>, i32, i64) -> Box<dyn 'a + Future<Output = i64>>,
+            i32: WasmTy,
+            i64: WasmTy,
+            i64: WasmRet,
+        {
+            f
+        }
+        let add = Func::wrap_async_with_caller(
+            &store,
+            check_type(|caller: Caller, x: i32, y: i64| {
+                Box::new(async move {
+                    let res = x as i64 + y;
+                    futures_timer::Delay::new(Duration::from_millis(1)).await;
+                    assert!(caller.get_export("foo").is_none());
+                    res
+                })
+            }),
+        );
+        let mut stack = Stack::new(16 * 4096).unwrap();
+        let f = add.get_async().get2::<i32, i64, i64>().unwrap();
+        assert_eq!(executor::block_on(f(&mut stack, 1, 2)).unwrap(), 3);
+    }
 }
