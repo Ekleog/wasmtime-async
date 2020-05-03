@@ -24,6 +24,17 @@ thread_local! {
     static TRANSFER: Cell<Option<context::Transfer>> = Cell::new(None);
 }
 
+macro_rules! def_wrap {
+    ($name:ident $(, $args:ident)*) => {
+        fn $name<F, $($args,)* R>(store: &Store, func: F) -> Func
+        where
+            F: 'static + for<'a> Fn(Caller<'a> $(, $args)*) -> Box<dyn 'a + Future<Output = R>>,
+            $($args: WasmTy,)*
+            R: WasmRet;
+    };
+}
+
+#[rustfmt::skip::macros(def_wrap)]
 pub trait FuncExt {
     // TODO: when it's possible, return impl Trait
     fn new_async<F>(store: &Store, ty: FuncType, func: F) -> Func
@@ -39,10 +50,22 @@ pub trait FuncExt {
     where
         F: IntoFuncAsync<Params, Results>;
 
-    // TODO: orphan rules force having two methods :(
-    fn wrap_async_with_caller<Params, Results, F>(store: &Store, func: F) -> Func
-    where
-        F: IntoFuncAsyncWithCaller<Params, Results>;
+    def_wrap!(wrap_async0);
+    def_wrap!(wrap_async1, A1);
+    def_wrap!(wrap_async2, A1, A2);
+    def_wrap!(wrap_async3, A1, A2, A3);
+    def_wrap!(wrap_async4, A1, A2, A3, A4);
+    def_wrap!(wrap_async5, A1, A2, A3, A4, A5);
+    def_wrap!(wrap_async6, A1, A2, A3, A4, A5, A6);
+    def_wrap!(wrap_async7, A1, A2, A3, A4, A5, A6, A7);
+    def_wrap!(wrap_async8, A1, A2, A3, A4, A5, A6, A7, A8);
+    def_wrap!(wrap_async9, A1, A2, A3, A4, A5, A6, A7, A8, A9);
+    def_wrap!(wrap_async10, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10);
+    def_wrap!(wrap_async11, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11);
+    def_wrap!(wrap_async12, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12);
+    def_wrap!(wrap_async13, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13);
+    def_wrap!(wrap_async14, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14);
+    def_wrap!(wrap_async15, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14, A15);
 
     // TODO: When it's possible, return:
     // impl 'a + Future<Output = anyhow::Result<Box<[Val]>>>
@@ -55,6 +78,43 @@ pub trait FuncExt {
     fn get_async<'a>(&'a self) -> AsyncGetter<'a>;
 }
 
+macro_rules! make_wrap {
+    ($name:ident $(, $args:ident)*) => {
+        fn $name<F, $($args,)* R>(store: &Store, func: F) -> Func
+        where
+            F: 'static + for<'a> Fn(Caller<'a> $(, $args)*) -> Box<dyn 'a + Future<Output = R>>,
+            $($args: WasmTy,)*
+            R: WasmRet,
+        {
+            #[allow(non_snake_case)]
+            let func = move |caller: Caller<'_>, $($args: $args),*| -> R {
+                // See comments on `new_async` for the safety of context transfers
+                let mut transfer = TRANSFER.with(|t| t.replace(None).unwrap());
+                // The below unsafe could be avoided with
+                // Box::into_pin when it gets stabilized. We will
+                // be able to remove the box altogether once [1]
+                // will get fixed
+                // [1] https://github.com/rust-lang/rust/issues/70263
+                let mut fut = unsafe { Pin::new_unchecked(func(caller, $($args),*)) };
+                loop {
+                    let ctx = unsafe { &mut *(transfer.data as *mut task::Context) };
+                    match fut.as_mut().poll(ctx) {
+                        Poll::Pending => {
+                            transfer = unsafe { transfer.context.resume(0) };
+                        }
+                        Poll::Ready(r) => {
+                            TRANSFER.with(|t| debug_assert!(t.replace(Some(transfer)).is_none()));
+                            return r;
+                        }
+                    }
+                }
+            };
+            Func::wrap(store, func)
+        }
+    };
+}
+
+#[rustfmt::skip::macros(make_wrap)]
 impl FuncExt for Func {
     fn new_async<F>(store: &Store, ty: FuncType, func: F) -> Func
     where
@@ -102,12 +162,22 @@ impl FuncExt for Func {
         func.into_func_async(store)
     }
 
-    fn wrap_async_with_caller<Params, Results, F>(store: &Store, func: F) -> Func
-    where
-        F: IntoFuncAsyncWithCaller<Params, Results>,
-    {
-        func.into_func_async_with_caller(store)
-    }
+    make_wrap!(wrap_async0);
+    make_wrap!(wrap_async1, A1);
+    make_wrap!(wrap_async2, A1, A2);
+    make_wrap!(wrap_async3, A1, A2, A3);
+    make_wrap!(wrap_async4, A1, A2, A3, A4);
+    make_wrap!(wrap_async5, A1, A2, A3, A4, A5);
+    make_wrap!(wrap_async6, A1, A2, A3, A4, A5, A6);
+    make_wrap!(wrap_async7, A1, A2, A3, A4, A5, A6, A7);
+    make_wrap!(wrap_async8, A1, A2, A3, A4, A5, A6, A7, A8);
+    make_wrap!(wrap_async9, A1, A2, A3, A4, A5, A6, A7, A8, A9);
+    make_wrap!(wrap_async10, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10);
+    make_wrap!(wrap_async11, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11);
+    make_wrap!(wrap_async12, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12);
+    make_wrap!(wrap_async13, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13);
+    make_wrap!(wrap_async14, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14);
+    make_wrap!(wrap_async15, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14, A15);
 
     fn call_async<'a>(
         &self,
@@ -270,42 +340,6 @@ macro_rules! impl_into_func {
                 Func::wrap(store, func)
             }
         }
-
-        impl<F, $($args,)* R> IntoFuncAsyncWithCaller<(Caller<'_>, $($args),*), R> for F
-        where
-            F: 'static + for<'a> Fn(
-                Caller<'a> $(, $args)*
-            ) -> Box<dyn 'a + Future<Output = R>>,
-            $($args: WasmTy,)*
-            R: WasmRet,
-        {
-            fn into_func_async_with_caller(self, store: &Store) -> Func {
-                #[allow(non_snake_case)]
-                let func = move |caller: Caller<'_>, $($args: $args),*| -> R {
-                    // See comments on `new_async` for the safety of context transfers
-                    let mut transfer = TRANSFER.with(|t| t.replace(None).unwrap());
-                    // The below unsafe could be avoided with
-                    // Box::into_pin when it gets stabilized. We will
-                    // be able to remove the box altogether once [1]
-                    // will get fixed
-                    // [1] https://github.com/rust-lang/rust/issues/70263
-                    let mut fut = unsafe { Pin::new_unchecked(self(caller, $($args),*)) };
-                    loop {
-                        let ctx = unsafe { &mut *(transfer.data as *mut task::Context) };
-                        match fut.as_mut().poll(ctx) {
-                            Poll::Pending => {
-                                transfer = unsafe { transfer.context.resume(0) };
-                            }
-                            Poll::Ready(r) => {
-                                TRANSFER.with(|t| debug_assert!(t.replace(Some(transfer)).is_none()));
-                                return r;
-                            }
-                        }
-                    }
-                };
-                Func::wrap(store, func)
-            }
-        }
     };
 }
 
@@ -407,27 +441,14 @@ mod tests {
     #[test]
     fn wrap_async_with_caller_then_get() {
         let store = Store::default();
-        // TODO: this should not be required
-        fn check_type<F, A1, A2, R>(f: F) -> F
-        where
-            F: 'static + for<'a> Fn(Caller<'a>, A1, A2) -> Box<dyn 'a + Future<Output = R>>,
-            A1: WasmTy,
-            A2: WasmTy,
-            R: WasmRet,
-        {
-            f
-        }
-        let add = Func::wrap_async_with_caller(
-            &store,
-            check_type(|caller: Caller, x: i32, y: i64| {
-                Box::new(async move {
-                    let res = x as i64 + y;
-                    futures_timer::Delay::new(Duration::from_millis(1)).await;
-                    assert!(caller.get_export("foo").is_none());
-                    res
-                })
-            }),
-        );
+        let add = Func::wrap_async2(&store, |caller: Caller, x: i32, y: i64| {
+            Box::new(async move {
+                let res = x as i64 + y;
+                futures_timer::Delay::new(Duration::from_millis(1)).await;
+                assert!(caller.get_export("foo").is_none());
+                res
+            })
+        });
         let mut stack = Stack::new(16 * 4096).unwrap();
         let f = add.get_async().get2::<i32, i64, i64>().unwrap();
         assert_eq!(executor::block_on(f(&mut stack, 1, 2)).unwrap(), 3);
