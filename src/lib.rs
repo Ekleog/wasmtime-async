@@ -408,12 +408,12 @@ mod tests {
     fn wrap_async_with_caller_then_get() {
         let store = Store::default();
         // TODO: this should not be required
-        fn check_type<F>(f: F) -> F
+        fn check_type<F, A1, A2, R>(f: F) -> F
         where
-            F: 'static + for<'a> Fn(Caller<'a>, i32, i64) -> Box<dyn 'a + Future<Output = i64>>,
-            i32: WasmTy,
-            i64: WasmTy,
-            i64: WasmRet,
+            F: 'static + for<'a> Fn(Caller<'a>, A1, A2) -> Box<dyn 'a + Future<Output = R>>,
+            A1: WasmTy,
+            A2: WasmTy,
+            R: WasmRet,
         {
             f
         }
