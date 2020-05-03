@@ -6,8 +6,6 @@ use std::pin::Pin;
 use std::task::{self, Poll};
 use std::thread;
 
-use futures::pin_mut;
-
 thread_local! {
     static TRANSFER: Cell<Option<context::Transfer>> = Cell::new(None);
 }
@@ -66,12 +64,11 @@ impl Func {
             let caller = Caller::from_wasm(caller);
             let params = Val::from_wasm_slice(params);
             let returns = Val::from_wasm_slice_mut(returns);
-            // This unsafe can be avoided with Box::into_pin when it
-            // gets stabilized, and is needed instead of `pin_mut!`
-            // only because of [1]
+            // This below unsafe could be avoided with Box::into_pin
+            // when it gets stabilized. We will be able to remove the
+            // box altogether once [1] will get fixed
             // [1] https://github.com/rust-lang/rust/issues/70263
-            let fut = unsafe { Pin::new_unchecked(func(caller, params, returns)) };
-            pin_mut!(fut);
+            let mut fut = unsafe { Pin::new_unchecked(func(caller, params, returns)) };
             loop {
                 // This is safe thanks to being run only from `call`
                 // or `get*`, which we know will make sure to pass the
@@ -128,6 +125,7 @@ impl Func {
                 let res = f.call(params);
                 res
             });
+            // TODO: make sure this unwrap can't panic
             let transfer = TRANSFER.with(|t| t.replace(None).unwrap());
             unsafe {
                 transfer
@@ -156,6 +154,94 @@ pub trait IntoFunc<Params, Results> {
     #[doc(hidden)]
     fn into_func(self, store: &wasmtime::Store) -> Func;
 }
+
+macro_rules! impl_into_func {
+    ($($args: ident),*) => {
+        impl<F, $($args,)* R, RetFut> IntoFunc<($($args,)*), R> for F
+        where
+            F: 'static + Fn($($args),*) -> RetFut,
+            $($args: wasmtime::WasmTy,)*
+            RetFut: Future<Output = R>,
+            R: wasmtime::WasmRet,
+        {
+            fn into_func(self, store: &wasmtime::Store) -> Func {
+                #[allow(non_snake_case)]
+                let func = move |$($args: $args,)*| -> R {
+                    // See comments on `new_async` for the safety of context transfer
+                    let mut transfer = TRANSFER.with(|t| t.replace(None).unwrap());
+                    let fut = self($($args),*);
+                    pin_utils::pin_mut!(fut);
+                    loop {
+                        let ctx = unsafe { &mut *(transfer.data as *mut task::Context) };
+                        match fut.as_mut().poll(ctx) {
+                            Poll::Pending => {
+                                transfer = unsafe { transfer.context.resume(0) };
+                            }
+                            Poll::Ready(r) => {
+                                TRANSFER.with(|t| debug_assert!(t.replace(Some(transfer)).is_none()));
+                                return r;
+                            }
+                        }
+                    }
+                };
+                Func::from_wasm(wasmtime::Func::wrap(store, func))
+            }
+        }
+
+        impl<F, $($args,)* R> IntoFunc<(Caller<'_>, $($args),*), R> for F
+        where
+            F: 'static + for<'a> Fn(
+                Caller<'a> $(, $args)*
+            ) -> Box<dyn 'a + Future<Output = R>>,
+            $($args: wasmtime::WasmTy,)*
+            R: wasmtime::WasmRet,
+        {
+            fn into_func(self, store: &wasmtime::Store) -> Func {
+                #[allow(non_snake_case)]
+                let func = move |caller: wasmtime::Caller<'_>, $($args: $args),*| -> R {
+                    // See comments on `new_async` for the safety of context transfers
+                    let mut transfer = TRANSFER.with(|t| t.replace(None).unwrap());
+                    // The below unsafe could be avoided with
+                    // Box::into_pin when it gets stabilized. We will
+                    // be able to remove the box altogether once [1]
+                    // will get fixed
+                    // [1] https://github.com/rust-lang/rust/issues/70263
+                    let mut fut = unsafe { Pin::new_unchecked(self(Caller::from_wasm(caller), $($args),*)) };
+                    loop {
+                        let ctx = unsafe { &mut *(transfer.data as *mut task::Context) };
+                        match fut.as_mut().poll(ctx) {
+                            Poll::Pending => {
+                                transfer = unsafe { transfer.context.resume(0) };
+                            }
+                            Poll::Ready(r) => {
+                                TRANSFER.with(|t| debug_assert!(t.replace(Some(transfer)).is_none()));
+                                return r;
+                            }
+                        }
+                    }
+                };
+                Func::from_wasm(wasmtime::Func::wrap(store, func))
+            }
+        }
+    };
+}
+
+impl_into_func!();
+impl_into_func!(A1);
+impl_into_func!(A1, A2);
+impl_into_func!(A1, A2, A3);
+impl_into_func!(A1, A2, A3, A4);
+impl_into_func!(A1, A2, A3, A4, A5);
+impl_into_func!(A1, A2, A3, A4, A5, A6);
+impl_into_func!(A1, A2, A3, A4, A5, A6, A7);
+impl_into_func!(A1, A2, A3, A4, A5, A6, A7, A8);
+impl_into_func!(A1, A2, A3, A4, A5, A6, A7, A8, A9);
+impl_into_func!(A1, A2, A3, A4, A5, A6, A7, A8, A9, A10);
+impl_into_func!(A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11);
+impl_into_func!(A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12);
+impl_into_func!(A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13);
+impl_into_func!(A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14);
+impl_into_func!(A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14, A15);
 
 // TODO: implement IntoFunc for as many variants as
 // https://docs.rs/wasmtime/0.16.0/wasmtime/trait.IntoFunc.html
@@ -225,4 +311,6 @@ mod tests {
             10i32
         );
     }
+
+    // TODO: test into_func with and without Caller
 }

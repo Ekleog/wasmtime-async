@@ -6,9 +6,10 @@ edition = "2018"
 
 [dependencies]
 anyhow = "1.0.28"
-futures = "0.3.4"
 context = "2.1.0"
+pin-utils = "0.1.0-alpha4"
 wasmtime = "0.16.0"
 
 [dev-dependencies]
+futures = "0.3.4"
 futures-timer = "3.0.2"
