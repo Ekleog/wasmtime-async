@@ -2,6 +2,7 @@ use std::cell::Cell;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
+use std::rc::Rc;
 use std::task::{self, Poll};
 use std::thread;
 
@@ -23,8 +24,6 @@ thread_local! {
     static TRANSFER: Cell<Option<context::Transfer>> = Cell::new(None);
 }
 
-type FinalResult<T> = thread::Result<anyhow::Result<T>>;
-
 pub trait FuncExt {
     // TODO: when it's possible, return impl Trait
     fn new_async<F>(store: &Store, ty: FuncType, func: F) -> Func
@@ -40,14 +39,20 @@ pub trait FuncExt {
     where
         F: IntoFuncAsync<Params, Results>;
 
-    // TODO: orphan rules force a different method :(
+    // TODO: orphan rules force having two methods :(
     fn wrap_async_with_caller<Params, Results, F>(store: &Store, func: F) -> Func
     where
         F: IntoFuncAsyncWithCaller<Params, Results>;
 
     // TODO: When it's possible, return:
     // impl 'a + Future<Output = anyhow::Result<Box<[Val]>>>
-    fn call_async<'a>(&self, stack: &'a mut Stack, params: &'a [Val]) -> WasmFuture<'a>;
+    fn call_async<'a>(
+        &self,
+        stack: &'a mut Stack,
+        params: &'a [Val],
+    ) -> WasmFuture<'a, anyhow::Result<Box<[Val]>>>;
+
+    fn get_async<'a>(&'a self) -> AsyncGetter<'a>;
 }
 
 impl FuncExt for Func {
@@ -104,9 +109,13 @@ impl FuncExt for Func {
         func.into_func_async_with_caller(store)
     }
 
-    fn call_async<'a>(&self, stack: &'a mut Stack, params: &'a [Val]) -> WasmFuture<'a> {
+    fn call_async<'a>(
+        &self,
+        stack: &'a mut Stack,
+        params: &'a [Val],
+    ) -> WasmFuture<'a, anyhow::Result<Box<[Val]>>> {
         extern "C" fn context_fn(mut transfer: context::Transfer) -> ! {
-            let res = std::panic::catch_unwind(|| {
+            let res: thread::Result<anyhow::Result<Box<[Val]>>> = std::panic::catch_unwind(|| {
                 // This is safe thanks to the `resume` just below this
                 // function's definition
                 let (f, params) = unsafe { &*(transfer.data as *const (Func, &[Val])) }.clone();
@@ -117,11 +126,7 @@ impl FuncExt for Func {
             });
             // TODO: make sure this unwrap can't panic
             let transfer = TRANSFER.with(|t| t.replace(None).unwrap());
-            unsafe {
-                transfer
-                    .context
-                    .resume(&res as *const FinalResult<Box<[Val]>> as usize)
-            };
+            unsafe { transfer.context.resume(&res as *const _ as usize) };
             // We're not allowed to panic from here anyway, so there's
             // little better than unreachable_unchecked even with
             // defensive programming in mind
@@ -139,7 +144,88 @@ impl FuncExt for Func {
         }
     }
 
-    // TODO: get0 to get15 (-> macro)
+    fn get_async<'a>(&'a self) -> AsyncGetter<'a> {
+        AsyncGetter { f: self }
+    }
+}
+
+pub struct AsyncGetter<'f> {
+    f: &'f Func,
+}
+
+macro_rules! implement_getter {
+    ($name:ident $(, $args:ident)*) => {
+        pub fn $name<$($args,)* R>(
+            &self
+        ) -> anyhow::Result<Box<dyn 'static + for<'s> Fn(&'s mut Stack, $($args),*) -> WasmFuture<'s, Result<R, Trap>>>>
+        where
+            // 'static bounds are free as all T: WasmTy are 'static anyway
+            $($args: 'static + WasmTy,)*
+            R: 'static + WasmTy,
+        {
+            // See the comments in `call_async` for why the unsafe
+            // blocks should be safe
+            #[allow(non_snake_case)]
+            extern "C" fn context_fn<F, $($args,)* R>(mut transfer: context::Transfer) -> !
+            where
+                F: Fn($($args,)*) -> Result<R, Trap>,
+                $($args: WasmTy,)*
+                R: WasmTy,
+            {
+                let res: thread::Result<Result<R, Trap>> = std::panic::catch_unwind(|| {
+                    let (f, $($args),*) = unsafe { &*(transfer.data as *const (Rc<F>, $($args),*)) }.clone();
+                    transfer = unsafe { transfer.context.resume(0) };
+                    TRANSFER.with(|t| debug_assert!(t.replace(Some(transfer)).is_none()));
+                    let res = f($($args),*);
+                    res
+                });
+                // TODO: make sure this unwrap can't unwind
+                let transfer = TRANSFER.with(|t| t.replace(None).unwrap());
+                unsafe { transfer.context.resume(&res as *const _ as usize); }
+                unsafe { std::hint::unreachable_unchecked() }
+            }
+            fn typed_context_fn<F, $($args,)* R>(_: &Rc<F>) -> extern "C" fn(context::Transfer) -> !
+            where
+                F: Fn($($args,)*) -> Result<R, Trap>,
+                $($args: WasmTy,)*
+                R: WasmTy,
+            {
+                context_fn::<F, $($args,)* R>
+            }
+            // We have to use `Rc` so that the returned future can also keep `f` alive
+            let f = Rc::new(self.f.$name::<$($args,)* R>()?);
+            #[allow(non_snake_case)]
+            Ok(Box::new(move |stack: &mut Stack, $($args: $args,)*| -> WasmFuture<'_, Result<R, Trap>> {
+                let ctx = unsafe { context::Context::new(&stack.s, typed_context_fn(&f)) };
+                let arg: (_, $($args),*) = (f.clone(), $($args),*);
+                let transfer = unsafe { ctx.resume(&arg as *const _ as usize) };
+                debug_assert!(transfer.data == 0);
+                WasmFuture {
+                    ctx: Some(transfer.context),
+                    phantom: PhantomData,
+                }
+            }))
+        }
+    };
+}
+
+impl<'f> AsyncGetter<'f> {
+    implement_getter!(get0);
+    implement_getter!(get1, A1);
+    implement_getter!(get2, A1, A2);
+    implement_getter!(get3, A1, A2, A3);
+    implement_getter!(get4, A1, A2, A3, A4);
+    implement_getter!(get5, A1, A2, A3, A4, A5);
+    implement_getter!(get6, A1, A2, A3, A4, A5, A6);
+    implement_getter!(get7, A1, A2, A3, A4, A5, A6, A7);
+    implement_getter!(get8, A1, A2, A3, A4, A5, A6, A7, A8);
+    implement_getter!(get9, A1, A2, A3, A4, A5, A6, A7, A8, A9);
+    implement_getter!(get10, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10);
+    implement_getter!(get11, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11);
+    implement_getter!(get12, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12);
+    implement_getter!(get13, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13);
+    implement_getter!(get14, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14);
+    implement_getter!(get15, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14, A15);
 }
 
 pub trait IntoFuncAsync<Params, Results> {
@@ -240,13 +326,15 @@ impl_into_func!(A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13);
 impl_into_func!(A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14);
 impl_into_func!(A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14, A15);
 
-pub struct WasmFuture<'a> {
+pub struct WasmFuture<'a, Ret> {
     ctx: Option<context::Context>,
-    phantom: PhantomData<&'a mut ()>, // Keeps alive the stack and parameters that ought to be
+    // The first phantom keeps alive the stack and parameters that ought to be.
+    // The second phantom states that Ret is being generated by WasmFuture.
+    phantom: PhantomData<(&'a mut (), fn() -> Ret)>,
 }
 
-impl<'a> Future for WasmFuture<'a> {
-    type Output = anyhow::Result<Box<[Val]>>;
+impl<'a, Ret> Future for WasmFuture<'a, Ret> {
+    type Output = Ret;
 
     fn poll(self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<Self::Output> {
         let this = self.get_mut();
@@ -264,7 +352,7 @@ impl<'a> Future for WasmFuture<'a> {
             // thus meaning that the waker is already registered
             Poll::Pending
         } else {
-            let res = unsafe { std::ptr::read(transfer.data as *const FinalResult<Box<[Val]>>) };
+            let res = unsafe { std::ptr::read(transfer.data as *const thread::Result<Ret>) };
             match res {
                 Ok(r) => Poll::Ready(r),
                 Err(e) => std::panic::resume_unwind(e),
@@ -302,6 +390,4 @@ mod tests {
             10i32
         );
     }
-
-    // TODO: test into_func with and without Caller
 }
