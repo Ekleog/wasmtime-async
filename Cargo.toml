@@ -5,5 +5,10 @@ authors = ["Léo Gaspard <leo@gaspard.io>"]
 edition = "2018"
 
 [dependencies]
-generator = "0.6.20"
+anyhow = "1.0.28"
+futures = "0.3.4"
+context = "2.1.0"
 wasmtime = "0.16.0"
+
+[dev-dependencies]
+futures-timer = "3.0.2"
