@@ -1,3 +1,86 @@
+//! # wasmtime-async
+//!
+//! This crate is an extension to the
+//! [`wasmtime`](https://github.com/bytecodealliance/wasmtime/blob/master/README.md)
+//! crate. It makes it possible to use wasmtime along with futures,
+//! without having to consider every WebAssembly call as blocking. Note
+//! however that it is designed only for cases where the time spent in
+//! WebAssembly is indeed not enough to warrant running it in a worker
+//! thread -- it is designed with, in mind, relatively lightweight
+//! WebAssembly code that then calls into async callbacks provided from
+//! the rust side.
+//!
+//! The WebAssembly code will be run on a specific stack and, when it
+//! calls an async callback provided by rust, will be interrupted until
+//! the future has returned. As such, so long as the time spent inside
+//! WebAssembly is not enough to warrant in itself running the whole task
+//! on a blocking executor, it should be possible to run WebAssembly code
+//! that integrates seamlessly with async code.
+//!
+//! The drawback of this approach is that the async callbacks appear as
+//! though they were blocking to WebAssembly. This is unfortunately
+//! necessary to not require the WebAssembly code itself to be
+//! async-ready.
+//!
+//! # Usage
+//!
+//! This crate provides two main elements:
+//! - The [`Stack`] struct, that owns a stack on which WebAssembly code
+//!   can run
+//! - The [`FuncExt`] trait, that provides extension methods for
+//!   [`wasmtime::Func`] for dealing with asynchronous callbacks provided
+//!   by Rust to WebAssembly.
+//!
+//! ## [`Stack`]
+//!
+//! The [`Stack`] struct is easy to use: just use [`Stack::new`], and it
+//! will create a stack on which WebAssembly code can run.
+//!
+//! Running code on a [`Stack`] takes a mutable reference to it so long as
+//! the code is running, thus preventing multiple functions from using the
+//! same stack without any runtime cost or unsafe usage.
+//!
+//! ## [`FuncExt`]
+//!
+//! The [`FuncExt`] provides most of the interesting methods in this crate.
+//!
+//! ### Wrapping async functions for use from WebAssembly
+//!
+//! First, use the methods to wrap async functions in Rust so that they
+//! could be used transparently from WebAssembly:
+//!
+//! - [`FuncExt::new_async`], corresponding to [`wasmtime::Func::new`]
+//! - [`FuncExt::wrap_async`], corresponding to [`wasmtime::Func::wrap`]
+//!   with callbacks that do not take a [`wasmtime::Caller`] as first
+//!   argument
+//! - [`FuncExt::wrap_async0`] to [`FuncExt::wrap_async15`], corresponding
+//!   to [`wasmtime::Func::wrap`] with callbacks that do take a
+//!   [`wasmtime::Caller`] as first argument
+//!
+//! It would be better to have a single [`FuncExt::wrap_async`] function,
+//! but unfortunately, due to both orphan rules and [a probable limitation
+//! of rustc](https://github.com/rust-lang/rust/issues/71852), it is not
+//! possible to do so at the moment, hence the multiple methods that
+//! handle each part of [`Func::wrap`].
+//!
+//! ### Calling WebAssembly that uses async functions
+//!
+//! When calling into WebAssembly code that potentially uses async
+//! functions, you **must** use an async-ready calling function, or a
+//! panic will arise!
+//!
+//! The functions are these:
+//!
+//! - [`FuncExt::call_async`], corresponding to [`wasmtime::Func::call`]
+//! - [`FuncExt::get_async`], which returns an [`AsyncGetter`] object. The
+//!   [`AsyncGetter`] object is just here to circumvent limitations in the
+//!   Rust type system, and in particular associated existential types. On
+//!   [`AsyncGetter`], you can call the [`AsyncGetter::get0`] to
+//!   [`AsyncGetter::get15`] functions just like you would have called
+//!   them on [`wasmtime::Func`].
+
+// TODO: use #![doc(include)] once it's stable
+
 use std::cell::Cell;
 use std::future::Future;
 use std::marker::PhantomData;
@@ -8,18 +91,21 @@ use std::thread;
 
 use wasmtime::{Caller, Func, FuncType, Store, Trap, Val, WasmRet, WasmTy};
 
+/// A stack on which to run WebAssembly code
 #[repr(transparent)]
 pub struct Stack {
     pub(crate) s: context::stack::ProtectedFixedSizeStack,
 }
 
 impl Stack {
+    /// Create a stack that can allow at least the given `size`
     pub fn new(size: usize) -> anyhow::Result<Stack> {
         let s = context::stack::ProtectedFixedSizeStack::new(size)?;
         Ok(Stack { s })
     }
 }
 
+/// A “prelude” for users of the `wasmtime-async` crate.
 pub mod prelude {
     pub use super::FuncExt;
 }
@@ -30,6 +116,14 @@ thread_local! {
 
 macro_rules! def_wrap {
     ($name:ident $(, $args:ident)*) => {
+        /// Wrap asynchronous functions that take a [`Caller`] as
+        /// their first argument.
+        ///
+        /// See also [`wasmtime::Func::wrap`] for more details.
+        ///
+        /// Running WebAssembly code that could call into a function
+        /// defined like this *must* be done with one of the
+        /// async-ready ways of calling it, or it will panic.
         fn $name<F, $($args,)* R>(store: &Store, func: F) -> Func
         where
             F: 'static + for<'a> Fn(Caller<'a> $(, $args)*) -> Box<dyn 'a + Future<Output = R>>,
@@ -38,8 +132,18 @@ macro_rules! def_wrap {
     };
 }
 
+/// The extension trait to [`wasmtime::Func`], that holds most of the
+/// interest of this crate.
 #[rustfmt::skip::macros(def_wrap)]
 pub trait FuncExt {
+    /// Wrap an asynchronous function like [`wasmtime::Func::new`]
+    /// would have done.
+    ///
+    /// See also [`wasmtime::Func::new`] for more details.
+    ///
+    /// Running WebAssembly code that could call into a function
+    /// defined like this *must* be done with one of the async-ready
+    /// ways of calling it, or it will panic.
     // TODO: when it's possible, return impl Trait
     fn new_async<F>(store: &Store, ty: FuncType, func: F) -> Func
     where
@@ -50,6 +154,14 @@ pub trait FuncExt {
                 &'a mut [Val],
             ) -> Box<dyn 'a + Future<Output = Result<(), Trap>>>;
 
+    /// Wrap an asynchronous function that does not take a [`Caller`]
+    /// as its first argument.
+    ///
+    /// See also [`wasmtime::Func::wrap`] for more details.
+    ///
+    /// Running WebAssembly code that could call into a function
+    /// defined like this *must* be done with one of the async-ready
+    /// ways of calling it, or it will panic.
     fn wrap_async<Params, Results, F>(store: &Store, func: F) -> Func
     where
         F: IntoFuncAsync<Params, Results>;
@@ -71,6 +183,11 @@ pub trait FuncExt {
     def_wrap!(wrap_async14, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14);
     def_wrap!(wrap_async15, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14, A15);
 
+    /// Call this function in an async-ready way. This makes it
+    /// possible to run functions that have been built by the helper
+    /// methods provided by this crate.
+    ///
+    /// See also [`wasmtime::Func::call`] for more details.
     // TODO: When it's possible, return:
     // impl 'a + Future<Output = anyhow::Result<Box<[Val]>>>
     fn call_async<'a>(
@@ -79,6 +196,16 @@ pub trait FuncExt {
         params: &'a [Val],
     ) -> WasmFuture<'a, anyhow::Result<Box<[Val]>>>;
 
+    /// Helper to retrieve WebAssembly functions in a way that could
+    /// be called directly from Rust, without having to marshal
+    /// arguments and return values.
+    ///
+    /// This will usually be immediately followed by one of the
+    /// methods on [`AsyncGetter`].
+    ///
+    /// This is a helper method designed to work around current Rust
+    /// typesystem limitations, ie. lack of associated existential
+    /// types.
     fn get_async<'a>(&'a self) -> AsyncGetter<'a>;
 }
 
@@ -223,12 +350,20 @@ impl FuncExt for Func {
     }
 }
 
+/// Helper struct for retrieving native functions out of WebAssembly
+/// functions that call async callbacks.
 pub struct AsyncGetter<'f> {
     f: &'f Func,
 }
 
 macro_rules! implement_getter {
     ($name:ident $(, $args:ident)*) => {
+        /// Retrieve a Rust-native function that calls this function
+        /// in an async-ready way. This makes it possible to run
+        /// functions that have been built by the helper methods
+        /// provided by this crate.
+        ///
+        /// See also [`wasmtime::Func::call`] for more details.
         pub fn $name<$($args,)* R>(
             &self
         ) -> anyhow::Result<Box<dyn 'static + for<'s> Fn(&'s mut Stack, $($args),*) -> WasmFuture<'s, Result<R, Trap>>>>
@@ -302,6 +437,11 @@ impl<'f> AsyncGetter<'f> {
     implement_getter!(get15, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14, A15);
 }
 
+/// Internal trait implemented for all arguments that can be passed to
+/// [`FuncExt::wrap_async`].
+///
+/// This trait should not be implemented by external users, it's only
+/// intended as an implementation detail of this crate.
 pub trait IntoFuncAsync<Params, Results> {
     #[doc(hidden)]
     fn into_func_async(self, store: &Store) -> Func;
@@ -359,6 +499,13 @@ impl_into_func!(A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13);
 impl_into_func!(A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14);
 impl_into_func!(A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14, A15);
 
+/// Future that runs WebAssembly code to completion, when the
+/// WebAssembly potentially includes async callback calls.
+///
+/// This struct should not be depended upon for anything other than it
+/// being `impl Future`. It will be removed once associated
+/// existential traits will exist, to be replaced by direct `impl
+/// Future` returns.
 pub struct WasmFuture<'a, Ret> {
     ctx: Option<context::Context>,
     // The first phantom keeps alive the stack and parameters that ought to be.

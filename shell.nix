@@ -31,5 +31,5 @@ let
 in
 pkgs.stdenv.mkDerivation {
   name = "wasmtime-async";
-  buildInputs = (with rustStableChannel; [ rust rustfmt-preview ]);
+  buildInputs = (with rustNightlyChannel; [ rust rustfmt-preview ]);
 }
