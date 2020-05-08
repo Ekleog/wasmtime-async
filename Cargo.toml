@@ -1,6 +1,6 @@
 [package]
 name = "wasmtime-async"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Léo Gaspard <leo@gaspard.io>"]
 edition = "2018"
 description = "Async support for wasmtime, with separate stacks"
@@ -8,7 +8,7 @@ readme = "README.md"
 repository = "https://github.com/Ekleog/wasmtime-async"
 license = "MIT OR Apache-2.0"
 keywords = ["async", "futures", "wasm", "webassembly"]
-categories = ["asynchronous", "webassembly"]
+categories = ["asynchronous", "wasm"]
 
 [badges]
 is-it-maintained-issue-resolution = { repository = "Ekleog/wasmtime-async" }
