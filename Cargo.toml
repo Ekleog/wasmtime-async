@@ -13,3 +13,4 @@ wasmtime = "0.16.0"
 [dev-dependencies]
 futures = "0.3.4"
 futures-timer = "3.0.2"
+smol = "0.1.4"
