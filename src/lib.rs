@@ -1,3 +1,12 @@
+// Copyright 2020 The Wasmtime-Async Developers. See the version
+// control history for a full list.
+//
+// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
+// option. This file may not be copied, modified, or distributed
+// except according to those terms.
+
 //! # wasmtime-async
 //!
 //! This crate is an extension to the
@@ -25,11 +34,10 @@
 //! # Usage
 //!
 //! This crate provides two main elements:
-//! - The [`Stack`] struct, that owns a stack on which WebAssembly code
-//!   can run
+//! - The [`Stack`] struct, that owns a stack on which WebAssembly code can run
 //! - The [`FuncExt`] trait, that provides extension methods for
-//!   [`wasmtime::Func`] for dealing with asynchronous callbacks provided
-//!   by Rust to WebAssembly.
+//!   [`wasmtime::Func`] for dealing with asynchronous callbacks provided by
+//!   Rust to WebAssembly.
 //!
 //! ## [`Stack`]
 //!
@@ -50,11 +58,10 @@
 //! could be used transparently from WebAssembly:
 //!
 //! - [`FuncExt::new_async`], corresponding to [`wasmtime::Func::new`]
-//! - [`FuncExt::wrap_async`], corresponding to [`wasmtime::Func::wrap`]
-//!   with callbacks that do not take a [`wasmtime::Caller`] as first
-//!   argument
-//! - [`FuncExt::wrap_async0`] to [`FuncExt::wrap_async15`], corresponding
-//!   to [`wasmtime::Func::wrap`] with callbacks that do take a
+//! - [`FuncExt::wrap_async`], corresponding to [`wasmtime::Func::wrap`] with
+//!   callbacks that do not take a [`wasmtime::Caller`] as first argument
+//! - [`FuncExt::wrap_async0`] to [`FuncExt::wrap_async15`], corresponding to
+//!   [`wasmtime::Func::wrap`] with callbacks that do take a
 //!   [`wasmtime::Caller`] as first argument
 //!
 //! It would be better to have a single [`FuncExt::wrap_async`] function,
@@ -73,21 +80,23 @@
 //!
 //! - [`FuncExt::call_async`], corresponding to [`wasmtime::Func::call`]
 //! - [`FuncExt::get_async`], which returns an [`AsyncGetter`] object. The
-//!   [`AsyncGetter`] object is just here to circumvent limitations in the
-//!   Rust type system, and in particular associated existential types. On
+//!   [`AsyncGetter`] object is just here to circumvent limitations in the Rust
+//!   type system, and in particular associated existential types. On
 //!   [`AsyncGetter`], you can call the [`AsyncGetter::get0`] to
-//!   [`AsyncGetter::get15`] functions just like you would have called
-//!   them on [`wasmtime::Func`].
+//!   [`AsyncGetter::get15`] functions just like you would have called them on
+//!   [`wasmtime::Func`].
 
 // TODO: use #![doc(include)] once it's stable
 
-use std::cell::Cell;
-use std::future::Future;
-use std::marker::PhantomData;
-use std::pin::Pin;
-use std::rc::Rc;
-use std::task::{self, Poll};
-use std::thread;
+use std::{
+    cell::Cell,
+    future::Future,
+    marker::PhantomData,
+    pin::Pin,
+    rc::Rc,
+    task::{self, Poll},
+    thread,
+};
 
 use wasmtime::{Caller, Func, FuncType, Store, Trap, Val, WasmRet, WasmTy};
 
@@ -418,6 +427,7 @@ macro_rules! implement_getter {
     };
 }
 
+#[rustfmt::skip::macros(implement_getter)]
 impl<'f> AsyncGetter<'f> {
     implement_getter!(get0);
     implement_getter!(get1, A1);
@@ -497,7 +507,9 @@ impl_into_func!(A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11);
 impl_into_func!(A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12);
 impl_into_func!(A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13);
 impl_into_func!(A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14);
-impl_into_func!(A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14, A15);
+impl_into_func!(
+    A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14, A15
+);
 
 /// Future that runs WebAssembly code to completion, when the
 /// WebAssembly potentially includes async callback calls.
