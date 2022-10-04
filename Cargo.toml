@@ -1,6 +1,6 @@
 [package]
 name = "wasmtime-async"
-version = "0.1.1"
+version = "1.0.0"
 authors = ["Léo Gaspard <leo@gaspard.io>"]
 edition = "2018"
 description = "Async support for wasmtime, with separate stacks"
@@ -13,15 +13,4 @@ categories = ["asynchronous", "wasm"]
 [badges]
 is-it-maintained-issue-resolution = { repository = "Ekleog/wasmtime-async" }
 is-it-maintained-open-issues = { repository = "Ekleog/wasmtime-async" }
-maintenance = { status = "actively-developed" }
-
-[dependencies]
-anyhow = "1.0.28"
-context = "2.1.0"
-pin-utils = "0.1.0-alpha4"
-wasmtime = "0.16.0"
-
-[dev-dependencies]
-futures = "0.3.4"
-futures-timer = "3.0.2"
-smol = "0.1.4"
+maintenance = { status = "deprecated" }
